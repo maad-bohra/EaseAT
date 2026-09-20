@@ -1,4 +1,4 @@
-# Attendly
+# EaseAT
 
 A student attendance manager built around one fact most trackers get wrong: **the same subject can meet more than once a day, and each meeting is its own class.**
 
