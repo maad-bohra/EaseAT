@@ -1,0 +1,240 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+/// Attendance status of a single class session.
+/// PENDING  -> session exists but the student has not marked it yet
+/// PRESENT / ABSENT -> the only two statuses that enter the percentage
+/// CANCELLED -> class did not happen (kept in history, ignored by maths)
+/// NO_CLASS  -> no class on that slot (holiday override, free period)
+enum AttendanceStatus {
+  PENDING
+  PRESENT
+  ABSENT
+  CANCELLED
+  NO_CLASS
+}
+
+enum CalendarEventType {
+  HOLIDAY
+  WORKING_DAY
+  EXAM
+  VACATION
+  SEMESTER_START
+  SEMESTER_END
+  OTHER
+}
+
+enum NotificationType {
+  UPCOMING_CLASS
+  LOW_ATTENDANCE
+  BELOW_REQUIRED
+  HOLIDAY_TOMORROW
+  EXAM_APPROACHING
+  CLASS_RESCHEDULED
+  MISSED_CLASS
+  SYSTEM
+}
+
+enum UploadStatus {
+  UPLOADED
+  TEXT_EXTRACTED
+  AI_PARSED
+  CONFIRMED
+  FAILED
+}
+
+model User {
+  id                  String   @id @default(uuid())
+  name                String
+  email               String   @unique
+  passwordHash        String
+  semester            Int?
+  year                Int?
+  collegeName         String?
+  /// Default attendance requirement in percent. Subjects may override it.
+  requiredAttendance  Float    @default(75)
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  subjects        Subject[]
+  timetableEntries TimetableEntry[]
+  sessions        AttendanceSession[]
+  calendarEvents  AcademicCalendarEvent[]
+  notifications   Notification[]
+  uploads         UploadedFile[]
+  reschedules     RescheduledClass[]
+
+  @@map("users")
+}
+
+model Subject {
+  id                 String   @id @default(uuid())
+  userId             String
+  name               String
+  code               String?
+  faculty            String?
+  credits            Int?
+  color              String   @default("#2F6F4E")
+  icon               String?
+  /// Overrides User.requiredAttendance when set.
+  requiredAttendance Float?
+  archived           Boolean  @default(false)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  user             User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  timetableEntries TimetableEntry[]
+  sessions         AttendanceSession[]
+
+  @@unique([userId, name])
+  @@index([userId])
+  @@map("subjects")
+}
+
+/// One recurring weekly slot. Two rows with the same subject and the same
+/// dayOfWeek but different startTime are legitimate and expected.
+model TimetableEntry {
+  id         String   @id @default(uuid())
+  userId     String
+  subjectId  String
+  /// 0 = Sunday ... 6 = Saturday
+  dayOfWeek  Int
+  /// "HH:mm", 24-hour clock
+  startTime  String
+  endTime    String
+  classroom  String?
+  faculty    String?
+  active     Boolean  @default(true)
+  /// Optional validity window (useful when a timetable changes mid-semester)
+  effectiveFrom DateTime? @db.Date
+  effectiveTo   DateTime? @db.Date
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  user     User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  subject  Subject             @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  sessions AttendanceSession[]
+
+  /// A student cannot be in two places at 09:00 on a Monday.
+  @@unique([userId, dayOfWeek, startTime])
+  @@index([userId, dayOfWeek])
+  @@map("timetable_entries")
+}
+
+/// One concrete class on one concrete date. This is the unit attendance is
+/// calculated on - never the subject alone.
+model AttendanceSession {
+  id               String           @id @default(uuid())
+  userId           String
+  subjectId        String
+  timetableEntryId String?
+  date             DateTime         @db.Date
+  startTime        String
+  endTime          String
+  status           AttendanceStatus @default(PENDING)
+  notes            String?
+  /// True when this session was created as the new slot of a reschedule.
+  isRescheduled    Boolean          @default(false)
+  markedAt         DateTime?
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+
+  user           User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  subject        Subject         @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  timetableEntry TimetableEntry? @relation(fields: [timetableEntryId], references: [id], onDelete: SetNull)
+
+  rescheduleAsOriginal RescheduledClass? @relation("OriginalSession")
+  rescheduleAsNew      RescheduledClass? @relation("NewSession")
+
+  /// Same subject, same day, different start time = two separate sessions.
+  @@unique([userId, subjectId, date, startTime])
+  @@index([userId, date])
+  @@index([userId, subjectId, status])
+  @@map("attendance_sessions")
+}
+
+model RescheduledClass {
+  id                String   @id @default(uuid())
+  userId            String
+  originalSessionId String   @unique
+  newSessionId      String   @unique
+  reason            String?
+  createdAt         DateTime @default(now())
+
+  user            User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  originalSession AttendanceSession @relation("OriginalSession", fields: [originalSessionId], references: [id], onDelete: Cascade)
+  newSession      AttendanceSession @relation("NewSession", fields: [newSessionId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("rescheduled_classes")
+}
+
+model AcademicCalendarEvent {
+  id          String            @id @default(uuid())
+  userId      String
+  date        DateTime          @db.Date
+  type        CalendarEventType
+  title       String?
+  description String?
+  /// AI-extracted rows start unverified and are ignored by the session
+  /// generator until the student confirms them.
+  verified    Boolean           @default(false)
+  source      String            @default("MANUAL") // MANUAL | AI_EXTRACTION
+  fileId      String?
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+
+  user User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  file UploadedFile? @relation(fields: [fileId], references: [id], onDelete: SetNull)
+
+  @@unique([userId, date, type, title])
+  @@index([userId, date])
+  @@map("academic_calendar")
+}
+
+model Notification {
+  id        String           @id @default(uuid())
+  userId    String
+  type      NotificationType
+  title     String
+  message   String
+  read      Boolean          @default(false)
+  /// Free-form payload so a channel adapter (email/push) can render later.
+  meta      Json?
+  /// Stops the same warning being written twice a day.
+  dedupeKey String?
+  createdAt DateTime         @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, dedupeKey])
+  @@index([userId, read, createdAt])
+  @@map("notifications")
+}
+
+model UploadedFile {
+  id            String       @id @default(uuid())
+  userId        String
+  originalName  String
+  mimeType      String
+  sizeBytes     Int
+  storageKey    String
+  publicUrl     String?
+  status        UploadStatus @default(UPLOADED)
+  extractedText String?      @db.Text
+  error         String?
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+
+  user   User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  events AcademicCalendarEvent[]
+
+  @@index([userId])
+  @@map("uploaded_files")
+}
