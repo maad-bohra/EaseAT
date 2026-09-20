@@ -152,6 +152,4 @@ Login, Register, Dashboard, Subjects, Timetable, Attendance, Calendar, Academic 
 
 bcrypt hashing, JWT with expiry, zod validation on every body/query/param, Prisma parameterized queries, per-user scoping in every service, helmet, rate limits on auth and AI routes, PDF-only uploads with a size cap, and secrets read only from the environment.
 
-## Not yet built
 
-Email and push delivery (the `deliver` function in `notification.service.js` is the hook), a scheduler to call `/notifications/refresh` without a page load, and an automated test suite. Deployment needs `prisma migrate deploy`, `STORAGE_DRIVER=supabase` for a read-only filesystem, and `CLIENT_ORIGIN` set to the deployed frontend.
